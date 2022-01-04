@@ -1,11 +1,14 @@
 {
   "name": "@airgap/beacon-sdk",
-  "version": "2.3.8",
+  "version": "2.3.1",
   "description": "The beacon-sdk allows you to easily connect DApps with Wallets through P2P communication or a chrome extension.",
   "main": "dist/cjs/index.js",
   "module": "dist/esm/index.js",
   "unpkg": "dist/walletbeacon.min.js",
   "types": "dist/cjs/index.d.ts",
+  "engines": {
+    "node": "14.16.0"
+  },
   "keywords": [
     "airgap",
     "beacon",
@@ -22,6 +25,7 @@
     "url": "https://github.com/airgap-it/beacon-sdk"
   },
   "scripts": {
+    "start": "node index.js",
     "prebuild": "ts-node --project tsconfig-cjs.json scripts/generate-wallet-list.ts",
     "build": "npm run pretest && tsc -p tsconfig.json && tsc -p ./tsconfig-cjs.json && npm run browserify && npm run posttest && cp ./dist/walletbeacon.min.js ./examples/walletbeacon.min.js",
     "browserify": "npm run pretest && tsc -p ./tsconfig-browserify.json && npm run posttest && browserify ./dist/browserify/index.js -s beacon | uglifyjs > ./dist/walletbeacon.min.js && rm -rf dist/browserify",
@@ -51,8 +55,12 @@
     "axios": "0.21.1",
     "bignumber.js": "9.0.0",
     "bs58check": "2.1.2",
+    "express": "^4.17.1",
+    "express-dependencies": "^1.2.2",
+    "express-handlebars": "^5.3.3",
     "libsodium-wrappers": "0.7.8",
-    "qrcode-generator": "1.4.4"
+    "qrcode-generator": "1.4.4",
+    "socket.io": "^4.2.0"
   },
   "devDependencies": {
     "@types/chai-as-promised": "7.1.2",
@@ -92,7 +100,8 @@
     "uglify-js": "3.9.4"
   },
   "files": [
-    "/dist"
+    "/dist",
+    "/examples"
   ],
   "nyc": {
     "include": [

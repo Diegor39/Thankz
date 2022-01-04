@@ -29,19 +29,24 @@ import { ExposedPromise } from '../../utils/exposed-promise'
 
 const logger = new Logger('P2PCommunicationClient')
 
-export const KNOWN_RELAY_SERVERS = [
-  'beacon-node-1.diamond.papers.tech',
+const KNOWN_RELAY_SERVERS = [
   'beacon-node-1.sky.papers.tech',
-  'beacon-node-2.sky.papers.tech',
-  'beacon-node-1.hope.papers.tech',
-  'beacon-node-1.hope-2.papers.tech',
-  'beacon-node-1.hope-3.papers.tech',
-  'beacon-node-1.hope-4.papers.tech',
-  'beacon-node-0.papers.tech:8448'
+  'beacon-node-0.papers.tech:8448',
+  'beacon-node-2.sky.papers.tech'
 ]
+
+const publicKeyToNumber = (arr: Uint8Array, mod: number) => {
+  let sum = 0
+  for (let i = 0; i < arr.length; i++) {
+    sum += arr[i] + i
+  }
+  return Math.floor(sum % mod)
+}
 
 /**
  * @internalapi
+ *
+ *
  */
 export class P2PCommunicationClient extends CommunicationClient {
   private client: ExposedPromise<MatrixClient> = new ExposedPromise()
@@ -51,7 +56,7 @@ export class P2PCommunicationClient extends CommunicationClient {
     | ((event: MatrixClientEvent<MatrixClientEventType.MESSAGE>) => void)
     | undefined
 
-  private readonly ENABLED_RELAY_SERVERS: string[]
+  private readonly KNOWN_RELAY_SERVERS: string[]
   public relayServer: ExposedPromise<string> | undefined
 
   private readonly activeListeners: Map<string, (event: MatrixClientEvent<any>) => void> = new Map()
@@ -71,8 +76,7 @@ export class P2PCommunicationClient extends CommunicationClient {
     super(keyPair)
 
     logger.log('constructor', 'P2PCommunicationClient created')
-    const nodes = matrixNodes.length > 0 ? matrixNodes : KNOWN_RELAY_SERVERS
-    this.ENABLED_RELAY_SERVERS = nodes
+    this.KNOWN_RELAY_SERVERS = matrixNodes.length > 0 ? matrixNodes : KNOWN_RELAY_SERVERS
   }
 
   public async getPairingRequestInfo(): Promise<P2PPairingRequest> {
@@ -122,17 +126,44 @@ export class P2PCommunicationClient extends CommunicationClient {
       this.relayServer = new ExposedPromise()
     }
 
+    // MIGRATION: If a relay server is set, it's all good and we don't have to do any migration
     const node = await this.storage.get(StorageKey.MATRIX_SELECTED_NODE)
     if (node && node.length > 0) {
       this.relayServer.resolve(node)
       return node
+    } else if (KNOWN_RELAY_SERVERS === this.KNOWN_RELAY_SERVERS) {
+      // Migration start
+      // Only if the array of nodes is the default we do the migration, otherwise we leave it.
+      // If NO relay server is set, we have 3 possibilities:
+
+      const hasDoneMigration = await this.storage.get(StorageKey.MULTI_NODE_SETUP_DONE)
+      if (!hasDoneMigration) {
+        // If this migration has run before, we can skip it.
+        const preservedState = await this.storage.get(StorageKey.MATRIX_PRESERVED_STATE)
+        console.log('PRESERVED STATE', preservedState)
+        if (preservedState.syncToken || preservedState.rooms) {
+          // If migration has NOT run and we have a sync state, we know have been previously connected. So we set the old default relayServer as our current node.
+          const node = 'matrix.papers.tech' // 2.2.7 Migration: This will default to the old default to avoid peers from losing their relayServer.
+          this.storage
+            .set(StorageKey.MATRIX_SELECTED_NODE, node)
+            .catch((error) => logger.log(error))
+          this.relayServer.resolve(node)
+          return node
+        }
+
+        this.storage.set(StorageKey.MULTI_NODE_SETUP_DONE, true).catch((error) => logger.log(error))
+        // Migration end
+      }
     }
 
-    const nodes = [...this.ENABLED_RELAY_SERVERS]
+    console.log('GET RELAY SERVER')
 
-    while (nodes.length > 0) {
-      const index = Math.floor(Math.random() * nodes.length)
-      const server = nodes[index]
+    const startIndex = publicKeyToNumber(this.keyPair.publicKey, this.KNOWN_RELAY_SERVERS.length)
+    let offset = 0
+
+    while (offset < this.KNOWN_RELAY_SERVERS.length) {
+      const serverIndex = (startIndex + offset) % this.KNOWN_RELAY_SERVERS.length
+      const server = this.KNOWN_RELAY_SERVERS[serverIndex]
 
       try {
         await axios.get(`https://${server}/_matrix/client/versions`)
@@ -144,7 +175,7 @@ export class P2PCommunicationClient extends CommunicationClient {
         return server
       } catch (relayError) {
         logger.log(`Ignoring server "${server}", trying another one...`)
-        nodes.splice(index, 1)
+        offset++
       }
     }
 
@@ -229,7 +260,7 @@ export class P2PCommunicationClient extends CommunicationClient {
       console.log('ERROR, RETRYING')
       await this.reset() // If we can't log in, let's reset
       console.log('TRYING AGAIN')
-      if (this.loginCounter <= this.ENABLED_RELAY_SERVERS.length) {
+      if (this.loginCounter <= this.KNOWN_RELAY_SERVERS.length) {
         this.loginCounter++
         this.start()
         return

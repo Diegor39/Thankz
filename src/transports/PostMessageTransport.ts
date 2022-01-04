@@ -4,6 +4,7 @@ import { Logger } from '../utils/Logger'
 import { PeerManager } from '../managers/PeerManager'
 import { PostMessagePairingRequest } from '../types/PostMessagePairingRequest'
 import { ExtendedPostMessagePairingResponse } from '../types/PostMessagePairingResponse'
+import { ExposedPromise } from '../utils/exposed-promise'
 import { Extension } from '../types/Extension'
 import { StorageKey } from '../types/storage/StorageKey'
 import { TransportType } from '../types/transport/TransportType'
@@ -18,20 +19,7 @@ import { Transport } from './Transport'
 
 const logger = new Logger('PostMessageTransport')
 
-let listeningForExtensions: boolean = false
-let extensionsPromise: Promise<Extension[]> | undefined
-let extensions: Extension[] | undefined
-
-const addExtension = (extension: Extension): void => {
-  if (!extensions) {
-    extensions = []
-  }
-
-  if (!extensions.some((ext) => ext.id === extension.id)) {
-    extensions.push(extension)
-    windowRef.postMessage('extensionsUpdated', windowRef.location.origin)
-  }
-}
+let extensions: ExposedPromise<Extension[]> | undefined
 
 /**
  * @internalapi
@@ -73,56 +61,47 @@ export class PostMessageTransport<
   }
 
   public static async getAvailableExtensions(): Promise<Extension[]> {
-    if (extensionsPromise) {
-      return extensionsPromise
-    }
-
     if (extensions) {
-      return extensions
+      return extensions.promise
     }
 
-    extensions = []
-    extensionsPromise = new Promise<Extension[]>((resolve) => {
-      PostMessageTransport.listenForExtensions()
+    extensions = new ExposedPromise()
+    const localExtensions: Extension[] = []
+
+    return new Promise((resolve) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const fn = (event: any): void => {
+        const data = event.data as ExtensionMessage<
+          string,
+          { id: string; name: string; iconURL: string }
+        >
+        const sender = data.sender
+        if (data && data.payload === 'pong' && sender) {
+          logger.log('getAvailableExtensions', `extension "${sender.name}" is available`, sender)
+          if (!localExtensions.some((ext) => ext.id === sender.id)) {
+            localExtensions.push(sender)
+          }
+        }
+      }
+
+      windowRef.addEventListener('message', fn)
 
       setTimeout(() => {
-        resolve(extensions ?? [])
+        // TODO: Should we allow extensions to register after the timeout has passed?
+        windowRef.removeEventListener('message', fn)
+        if (extensions) {
+          extensions.resolve(localExtensions)
+        }
+        resolve(localExtensions)
       }, 1000)
-    }).finally(() => {
-      extensionsPromise = undefined
-    })
 
-    return extensionsPromise
-  }
-
-  private static listenForExtensions(): void {
-    if (listeningForExtensions) {
-      return
-    }
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const fn = (event: any): void => {
-      const data = event.data as ExtensionMessage<
-        string,
-        { id: string; name: string; iconURL: string }
-      >
-      const sender = data.sender
-      if (data && data.payload === 'pong' && sender) {
-        logger.log('getAvailableExtensions', `extension "${sender.name}" is available`, sender)
-        addExtension(sender)
+      const message: ExtensionMessage<string> = {
+        target: ExtensionMessageTarget.EXTENSION,
+        payload: 'ping'
       }
-    }
-
-    windowRef.addEventListener('message', fn)
-
-    const message: ExtensionMessage<string> = {
-      target: ExtensionMessageTarget.EXTENSION,
-      payload: 'ping'
-    }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    windowRef.postMessage(message as any, windowRef.location.origin)
-
-    listeningForExtensions = true
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      windowRef.postMessage(message as any, windowRef.location.origin)
+    })
   }
 
   public async connect(): Promise<void> {
